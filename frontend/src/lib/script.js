@@ -57,7 +57,7 @@ export const toastType = writable('success');
 export const showToastFlag = writable(false);
 
 // API base URL
-const API_BASE = 'http://localhost:8080';
+const API_BASE = 'http://localhost:5000';
 
 // Error logging function
 export function logError(context, error, additionalData = {}) {
@@ -100,27 +100,52 @@ export function showToast(message, type = 'success') {
 // Load backend status and models
 export async function loadBackendInfo() {
     try {
-        const response = await fetch(`${API_BASE}/health`);
-        if (response.ok) {
-            const status = await response.json();
-            backendStatus.set(status);
+        // Use realistic timeouts - backend can take a moment to respond
+        const createFetchWithTimeout = (url, timeoutMs) => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            
+            return fetch(url, { signal: controller.signal })
+                .finally(() => clearTimeout(timeoutId));
+        };
+
+        // Run both requests in parallel with 8 second timeout each
+        const [healthResponse, modelsResponse] = await Promise.allSettled([
+            createFetchWithTimeout(`${API_BASE}/health`, 8000),
+            createFetchWithTimeout(`${API_BASE}/models`, 8000)
+        ]);
+
+        // Handle health check
+        if (healthResponse.status === 'fulfilled' && healthResponse.value.ok) {
+            try {
+                const status = await healthResponse.value.json();
+                backendStatus.set(status);
+            } catch (e) {
+                console.warn('Failed to parse health response:', e);
+                backendStatus.set({ status: 'offline' });
+            }
         } else {
-            throw new Error(`Health check failed: ${response.status} ${response.statusText}`);
+            console.warn('Health check failed');
+            backendStatus.set({ status: 'offline' });
         }
 
-        const modelsResponse = await fetch(`${API_BASE}/models`);
-        if (modelsResponse.ok) {
-            const modelsData = await modelsResponse.json();
-            availableModels.set(modelsData.available_models || []);
-            currentModel.set(modelsData.current_model || '');
-            selectedModel.set(modelsData.current_model || '');
+        // Handle models fetch
+        if (modelsResponse.status === 'fulfilled' && modelsResponse.value.ok) {
+            try {
+                const modelsData = await modelsResponse.value.json();
+                availableModels.set(modelsData.available_models || []);
+                currentModel.set(modelsData.current_model || '');
+                selectedModel.set(modelsData.current_model || '');
+            } catch (e) {
+                console.warn('Failed to parse models response:', e);
+            }
         } else {
-            throw new Error(`Models fetch failed: ${modelsResponse.status} ${modelsResponse.statusText}`);
+            console.warn('Models fetch failed');
         }
     } catch (err) {
         logError('loadBackendInfo', err, { API_BASE });
-        console.error('Failed to load backend info:', err);
-        error.set('Failed to connect to backend service');
+        console.warn('Failed to load backend info:', err);
+        backendStatus.set({ status: 'offline' });
     }
 }
 
@@ -437,16 +462,34 @@ export async function continueToRewrite(paraphrasedText, modelUsed = null, enhan
 // Load available detection models with enhanced information
 export async function loadDetectionModels() {
     try {
-        const response = await fetch(`${API_BASE}/detect_models`);
+        // Detection models are not critical - use very long timeout and continue anyway
+        const controller = new AbortController();
+        
+        // Use 15 second timeout for detection models (not critical for page)
+        const timeoutId = setTimeout(() => {
+            controller.abort();
+        }, 15000); // 15 seconds
+        
+        const response = await fetch(`${API_BASE}/detect_models`, {
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
         if (response.ok) {
             const data = await response.json();
             availableDetectionModels.set(data.available_models || []);
         } else {
-            console.warn('Failed to load detection models');
+            console.warn('Detection models endpoint returned non-200 status');
         }
     } catch (err) {
-        logError('loadDetectionModels', err);
-        console.warn('Failed to load detection models:', err);
+        // Silently fail for detection models - not critical
+        if (err.name !== 'AbortError') {
+            console.debug('Detection models load failed (non-critical):', err.message);
+        } else {
+            console.debug('Detection models load timeout (non-critical)');
+        }
+        // Don't log as error since it's not critical
     }
 }
 

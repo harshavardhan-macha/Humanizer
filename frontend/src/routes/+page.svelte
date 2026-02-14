@@ -125,16 +125,14 @@
     };
 
     onMount(() => {
-        try {
-            loadBackendInfo();
-            loadDetectionModels();
-            // Set default selected detection model
-            selectedDetectionModels.set([getRecommendedDetectionModel('performance')]);
-            // Set default selected humanization model - much simpler!
-            selectedModel.set(getRecommendedHumanizationModel('performance'));
-        } catch (err) {
-            console.error('Failed to initialize:', err);
-        }
+        // Set defaults immediately for fast initial render
+        selectedModel.set(getRecommendedHumanizationModel('performance'));
+        selectedDetectionModels.set([getRecommendedDetectionModel('performance')]);
+        
+        // Load backend info and models asynchronously (non-blocking)
+        // Don't await these - let them load in background
+        loadBackendInfo().catch(err => console.error('Failed to load backend info:', err));
+        loadDetectionModels().catch(err => console.error('Failed to load detection models:', err));
     });
 </script>
 

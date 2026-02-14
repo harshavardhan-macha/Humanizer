@@ -3,10 +3,11 @@ import json
 import random
 import string
 import time
-import re
 from typing import List, Dict, Optional, Tuple
 import logging
-
+import re
+from dotenv import load_dotenv
+import requests
 import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.stem import SnowballStemmer
@@ -14,12 +15,11 @@ from nltk.corpus import wordnet
 
 # spaCy imports with fallback
 try:
-    import spacy
     from textblob import TextBlob
     ADVANCED_NLP_AVAILABLE = True
 except ImportError:
     ADVANCED_NLP_AVAILABLE = False
-    logging.warning("spaCy/TextBlob not available. Install with: pip install spacy textblob")
+    logging.warning("TextBlob not available. Install with: pip install textblob")
 
 # Download required NLTK data with better error handling
 def download_nltk_data():
@@ -64,28 +64,20 @@ logger = logging.getLogger(__name__)
 stemmer = SnowballStemmer('english')
 
 class LocalRefinementRepository:
-    """Advanced local text refinement using spaCy, TextBlob, and NLTK"""
+    """Advanced local text refinement using TextBlob and NLTK"""
     
     def __init__(self):
-        self.nlp = None
         self.advanced_features = ADVANCED_NLP_AVAILABLE
-        
-        if self.advanced_features:
-            try:
-                # Try to load spaCy model
-                self.nlp = spacy.load("en_core_web_sm")
-                logger.info("Loaded spaCy model for advanced text processing")
-            except OSError:
-                logger.warning("spaCy model 'en_core_web_sm' not found. Install with: python -m spacy download en_core_web_sm")
-                self.advanced_features = False
         
         if not self.advanced_features:
             logger.info("Using NLTK-based text refinement")
+        else:
+            logger.info("Using TextBlob and NLTK for advanced text refinement")
     
     def refine_text(self, text: str) -> Tuple[str, Optional[str]]:
         """Refine text using best available local NLP tools"""
         try:
-            if self.advanced_features and self.nlp:
+            if self.advanced_features:
                 return self._advanced_refinement(text), None
             else:
                 return self._nltk_refinement(text), None
@@ -95,15 +87,14 @@ class LocalRefinementRepository:
             return self._basic_refinement(text), None
     
     def _advanced_refinement(self, text: str) -> str:
-        """Advanced refinement using spaCy and TextBlob"""
+        """Advanced refinement using TextBlob and NLTK"""
         try:
             # Grammar correction with TextBlob
             blob = TextBlob(text)
-            corrected_text = str(blob.correct())
+            corrected_text = text
             
-            # Process with spaCy
-            doc = self.nlp(corrected_text)
-            sentences = [sent.text.strip() for sent in doc.sents]
+            # Split sentences using NLTK
+            sentences = sent_tokenize(corrected_text)
             
             refined_sentences = []
             for sentence in sentences:
@@ -254,62 +245,105 @@ class LocalRefinementRepository:
         final_text = re.sub(r'([.!?])\s*([A-Z])', r'\1 \2', final_text)  # Ensure space after sentence endings
         final_text = re.sub(r'\s{2,}', ' ', final_text)  # Replace multiple spaces with single space
         final_text = re.sub(r'\s+$', '', final_text)  # Remove trailing spaces
-        final_text = re.sub(r'^\s+', '', final_text)  # Remove leading spaces
-        
+        final_text = re.sub(r'^\s+', '', final_text)  # Remove leading spaces 
         return final_text
-
 class LocalSynonymRepository:
     """Enhanced local synonym repository using NLTK WordNet"""
     
     def __init__(self):
-        # Ensure WordNet is available
-        try:
-            nltk.data.find('corpora/wordnet')
-        except LookupError:
-            nltk.download('wordnet', quiet=True)
-            nltk.download('omw-1.4', quiet=True)
+        load_dotenv()
+        self.synonym_cache = {}
+
+        self.app_id = os.getenv("OXFORD_APP_ID")
+        self.app_key = os.getenv("OXFORD_APP_KEY")
+
+        if self.app_id and self.app_key:
+            logger.info("Oxford Dictionary API credentials loaded from .env")
+        else:
+            logger.warning("Oxford API keys missing from .env, will use WordNet only")
     
     def get_synonym(self, word: str) -> Tuple[str, Optional[str]]:
-        """Get synonym for a word using WordNet"""
+        clean_word = word.lower().strip()
+
+        # Cache check first
+        if clean_word in self.synonym_cache:
+            return self.synonym_cache[clean_word], None
+
+        if len(clean_word) < 3:
+            self.synonym_cache[clean_word] = ""
+            return "", "Word too short"
+
+        # 1) Try Oxford thesaurus endpoint if keys exist
+        if self.app_id and self.app_key:
+            try:
+                # Thesaurus endpoint: /api/v2/thesaurus/en-gb/{word}[web:1][web:34]
+                url = f"https://od-api.oxforddictionaries.com/api/v2/thesaurus/en-gb/{clean_word}"
+                headers = {
+                    "app_id": self.app_id,
+                    "app_key": self.app_key,
+                }
+                resp = requests.get(url, headers=headers, timeout=3)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    senses = data["results"][0]["lexicalEntries"][0]["entries"][0]["senses"]
+                    candidates = []
+                    for sense in senses:
+                        for syn in sense.get("synonyms", []):
+                            txt = syn.get("text")
+                            if (
+                                txt
+                                and txt.isalpha()
+                                and txt.lower() != clean_word
+                            ):
+                                candidates.append(txt)
+                    if candidates:
+                        result = random.choice(candidates)
+                        self.synonym_cache[clean_word] = result
+                        return result, None
+                else:
+                    logger.debug(
+                        f"Oxford API non-200 for '{clean_word}': {resp.status_code}"
+                    )
+            except Exception as e:
+                logger.debug(f"Oxford API error for '{clean_word}': {e}")
+
+        # 2) Fallback to existing WordNet logic
         try:
-            clean_word = word.lower().strip()
-            if len(clean_word) < 3:
-                return "", "Word too short for synonym replacement"
-            
             synsets = wordnet.synsets(clean_word)
             if not synsets:
+                self.synonym_cache[clean_word] = ""
                 return "", "No synonyms found for the word"
-            
-            # Collect synonyms from multiple synsets
+
             all_synonyms = []
-            for synset in synsets[:3]:  # Check first 3 synsets
+            for synset in synsets[:1]:  # Only check first synset for speed
                 for lemma in synset.lemmas():
-                    synonym = lemma.name().replace('_', ' ')
-                    if (synonym != clean_word and 
-                        len(synonym.split()) == 1 and  # Single word only
-                        synonym.isalpha() and
-                        len(synonym) >= 3):
+                    synonym = lemma.name().replace("_", " ")
+                    if (
+                        synonym != clean_word
+                        and len(synonym.split()) == 1
+                        and synonym.isalpha()
+                        and len(synonym) >= 3
+                    ):
                         all_synonyms.append(synonym)
-            
+
             if not all_synonyms:
+                self.synonym_cache[clean_word] = ""
                 return "", "No suitable synonyms found"
-            
-            # Filter by similarity (prefer words of similar length)
+
             word_len = len(clean_word)
             filtered_synonyms = [
-                syn for syn in all_synonyms 
-                if abs(len(syn) - word_len) <= 3
+                syn for syn in all_synonyms if abs(len(syn) - word_len) <= 3
             ]
-            
-            if filtered_synonyms:
-                return random.choice(filtered_synonyms), None
-            elif all_synonyms:
-                return random.choice(all_synonyms), None
-            else:
-                return "", "No valid synonyms found"
-                
+
+            result = random.choice(filtered_synonyms or all_synonyms)
+            self.synonym_cache[clean_word] = result
+            return result, None
+
         except Exception as e:
+            self.synonym_cache[clean_word] = ""
             return "", f"Error fetching synonym: {str(e)}"
+
+
 
 class TextRewriteService:
     """Enhanced service for rewriting and humanizing text"""
@@ -344,32 +378,37 @@ class TextRewriteService:
             transformed = []
             
             for sentence in sentences:
-                # Apply various transformations with INCREASED probability
-                if random.random() < 0.8:  # Increased from 0.4
+                # Apply various transformations with REDUCED probability for speed
+                if random.random() < 0.2:  # Reduced from 0.8
                     sentence = self._vary_sentence_structure(sentence)
-                if random.random() < 0.6:  # Increased from 0.2
+                if random.random() < 0.1:  # Reduced from 0.6
                     sentence = self._replace_synonyms(sentence)
-                if random.random() < 0.5:  # Increased from 0.15
-                    sentence = self._add_natural_noise(sentence)
+                # Skip natural noise - too slow
                 
                 transformed.append(sentence)
             
-            # More aggressive sentence reordering
-            if len(transformed) > 2 and random.random() < 0.4:  # Increased from 0.2
+            # Reduced sentence reordering
+            if len(transformed) > 2 and random.random() < 0.1:  # Reduced from 0.4
                 if len(transformed) > 3:
                     middle = transformed[1:-1]
                     random.shuffle(middle)
                     transformed = [transformed[0]] + middle + [transformed[-1]]
             
-            # More frequent contextual filler addition
-            if len(transformed) > 1 and random.random() < 0.4:  # Increased from 0.2
+            # Reduced filler addition
+            if len(transformed) > 1 and random.random() < 0.1:  # Reduced from 0.4
                 filler = self._get_contextual_filler(transformed)
                 if filler:
                     # Insert at random position (not just end)
                     insert_pos = random.randint(1, len(transformed))
                     transformed.insert(insert_pos, filler)
             
-            return " ".join(transformed), None
+            result_text = " ".join(transformed)
+            # Collapse any pathological repeated phrases before returning
+            result_text = self._collapse_repeated_phrases(result_text)
+            
+            result_text = self._inject_human_errors(result_text)
+
+            return result_text, None
             
         except Exception as e:
             logger.error(f"Error in enhanced rewriting: {str(e)}")
@@ -409,8 +448,8 @@ class TextRewriteService:
         if not sentence[0].isupper():
             return sentence
         
-        # Increased probability from 0.2 to 0.5
-        if random.random() < 0.5:
+        # Reduced probability from 0.5 to 0.15 for speed
+        if random.random() < 0.15:
             transition = random.choice(transitions)
             return transition + sentence.lower()
         
@@ -438,36 +477,45 @@ class TextRewriteService:
             "they're": "they are"
         }
         
-        # Always expand contractions for academic tone (increased probability)
-        if random.random() < 0.8:
+        # Reduced probability from 0.8 to 0.2 for speed
+        if random.random() < 0.2:
             for contraction, expansion in contractions.items():
-                if contraction in sentence.lower():
-                    # Case-sensitive replacement
-                    sentence = re.sub(re.escape(contraction), expansion, sentence, flags=re.IGNORECASE)
+                # Case-insensitive replacement
+                lower_sentence = sentence.lower()
+                if contraction in lower_sentence:
+                    # Find and replace while preserving case
+                    idx = lower_sentence.find(contraction)
+                    if idx != -1:
+                        sentence = sentence[:idx] + expansion + sentence[idx + len(contraction):]
                     break
         
         return sentence
     
     def _replace_synonyms(self, sentence: str) -> str:
-        """Intelligently replace words with synonyms - MORE AGGRESSIVE"""
+        """Intelligently replace words with synonyms"""
         words = sentence.split()
         modifications = 0
-        max_modifications = max(1, len(words) // 4)  # Allow more modifications
+        max_modifications = max(1, len(words) // 8)  # Reduced frequency
         
         for i, word in enumerate(words):
             if modifications >= max_modifications:
                 break
-                
-            # Extract clean word
-            clean_word = re.sub(r'[^\w]', '', word).lower()
-            
+
+            # Extract clean word - remove non-alphanumeric characters
+            clean_word = ''.join(c for c in word if c.isalnum()).lower()
+
             # Skip if too short or too common
-            if (len(clean_word) < 3 or  # Reduced from 4 to 3
+            if (len(clean_word) < 4 or  
                 self._is_common_word(clean_word)):
                 continue
-            
-            # INCREASED probability from 0.15 to 0.4
-            if random.random() < 0.4:
+
+            # Do not replace proper nouns or capitalized words (preserve nouns)
+            # If the original token starts with uppercase (likely a proper noun), skip
+            if word and word[0].isupper():
+                continue
+
+            # Reduced probability from 0.4 to 0.2
+            if random.random() < 0.2:
                 synonym, err = self.synonym_repo.get_synonym(clean_word)
                 if not err and synonym:
                     # Preserve original word formatting
@@ -476,7 +524,58 @@ class TextRewriteService:
                     modifications += 1
         
         return " ".join(words)
-    
+
+    def _collapse_repeated_phrases(self, text: str) -> str:
+        """Collapse pathological repeated words/phrases (e.g. 'any stuffs good any stuffs good ...').
+        Reduces any immediate repetition of the same word sequence to a single occurrence.
+        """
+        try:
+            # Collapse repeated single words repeated 3 or more times into one
+            text = re.sub(r"\b(\w+)(?:\s+\1){2,}\b", r"\1", text, flags=re.IGNORECASE)
+
+            # Collapse repeated short phrases (2-4 words) repeated 2+ times
+            # Example: '(any stuffs good) (any stuffs good) ...' -> single occurrence
+            for n in range(4, 1, -1):
+                pattern = r"\b((?:\w+\s+){%d}\w+)(?:\s+\1){1,}\b" % (n-1)
+                text = re.sub(pattern, r"\1", text, flags=re.IGNORECASE)
+
+            # Remove excessive trailing repeated tokens like 'good good good' -> 'good'
+            text = re.sub(r"(\b\w+\b)(?:\s+\1){2,}", r"\1", text, flags=re.IGNORECASE)
+            return text
+        except Exception:
+            return text
+    def _inject_human_errors(self, text: str) -> str:
+        """
+        Inject small, realistic grammar mistakes:
+        - article confusion
+        - subject–verb agreement slips
+        - preposition mixups
+        """
+        try:
+            sentences = self._split_sentences(text)
+            noisy = []
+
+            for sent in sentences:
+                s = sent
+
+                # 1) Article mistakes (a/an/the)
+                if random.random() < 0.25:
+                    s = self._article_errors(s)
+
+                # 2) Subject–verb agreement mistakes
+                if random.random() < 0.25:
+                    s = self._subject_verb_errors(s)
+
+                # 3) Preposition mistakes
+                if random.random() < 0.25:
+                    s = self._preposition_errors(s)
+
+                noisy.append(s)
+
+            return " ".join(noisy)
+        except Exception:
+            return text
+
     def _preserve_word_format(self, original: str, replacement: str) -> str:
         """Preserve capitalization and punctuation of original word"""
         # Extract prefix and suffix punctuation
@@ -544,11 +643,14 @@ class TextRewriteService:
             if replacements_made >= max_replacements:
                 break
                 
-            if old in sentence.lower() and random.random() < 0.3:  # Increased from 0.15
+            lower_sentence = sentence.lower()
+            if old in lower_sentence and random.random() < 0.3:  # Increased from 0.15
                 new_phrase = random.choice(new_options)
-                # Case-sensitive replacement
-                sentence = re.sub(re.escape(old), new_phrase, sentence, count=1, flags=re.IGNORECASE)
-                replacements_made += 1
+                # Case-insensitive replacement - find and replace once
+                idx = lower_sentence.find(old)
+                if idx != -1:
+                    sentence = sentence[:idx] + new_phrase + sentence[idx + len(old):]
+                    replacements_made += 1
         
         return sentence
     
@@ -582,12 +684,18 @@ class TextRewriteService:
     
     def _extract_keywords(self, text: str) -> List[str]:
         """Extract meaningful keywords from text"""
-        # Simple keyword extraction
-        words = re.findall(r'\b[a-zA-Z]{5,}\b', text.lower())
+        # Simple keyword extraction - get words with 5+ letters
+        words = text.lower().split()
+        extracted = []
+        for word in words:
+            # Remove punctuation and check length
+            clean_word = ''.join(c for c in word if c.isalpha())
+            if len(clean_word) >= 5:
+                extracted.append(clean_word)
         
         # Filter out common words
         filtered_words = [
-            word for word in words 
+            word for word in extracted 
             if not self._is_common_word(word)
         ]
         

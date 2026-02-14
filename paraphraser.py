@@ -24,8 +24,8 @@ MODEL_CONFIGS = {
         "model_name": "t5-small",
         "prefix": "paraphrase: ",
         "max_length": 512,
-        "num_beams": 4,
-        "do_sample": True,
+        "num_beams": 1,
+        "do_sample": False,
         "temperature": 0.7,
         "top_k": 50
     },
@@ -34,8 +34,8 @@ MODEL_CONFIGS = {
         "model_name": "t5-base",
         "prefix": "paraphrase: ",
         "max_length": 512,
-        "num_beams": 4,
-        "do_sample": True,
+        "num_beams": 1,
+        "do_sample": False,
         "temperature": 0.7,
         "top_k": 50
     },
@@ -44,8 +44,8 @@ MODEL_CONFIGS = {
         "model_name": "Vamsi/T5_Paraphrase_Paws",
         "prefix": "paraphrase: ",
         "max_length": 512,
-        "num_beams": 4,
-        "do_sample": True,
+        "num_beams": 1,
+        "do_sample": False,
         "temperature": 0.7,
         "top_k": 50
     },
@@ -54,8 +54,8 @@ MODEL_CONFIGS = {
         "model_name": "humarin/chatgpt_paraphraser_on_T5_base",
         "prefix": "paraphrase: ",
         "max_length": 512,
-        "num_beams": 4,
-        "do_sample": True,
+        "num_beams": 1,
+        "do_sample": False,
         "temperature": 0.7,
         "top_k": 50
     },
@@ -65,8 +65,8 @@ MODEL_CONFIGS = {
         "model_name": "facebook/bart-base",
         "prefix": "",
         "max_length": 512,
-        "num_beams": 4,
-        "do_sample": True,
+        "num_beams": 1,
+        "do_sample": False,
         "temperature": 0.7,
         "top_k": 50
     },
@@ -75,8 +75,8 @@ MODEL_CONFIGS = {
         "model_name": "facebook/bart-large",
         "prefix": "",
         "max_length": 512,
-        "num_beams": 4,
-        "do_sample": True,
+        "num_beams": 1,
+        "do_sample": False,
         "temperature": 0.7,
         "top_k": 50
     },
@@ -86,8 +86,8 @@ MODEL_CONFIGS = {
         "model_name": "tuner007/pegasus_paraphrase",
         "prefix": "",
         "max_length": 256,
-        "num_beams": 10,
-        "do_sample": True,
+        "num_beams": 1,
+        "do_sample": False,
         "temperature": 0.8,
         "top_k": 40
     }
@@ -165,28 +165,29 @@ def load_model(model_name_param: str = None) -> Tuple[bool, Optional[str]]:
         # Load model based on type
         if config["requires_sentencepiece"]:
             # T5 models
-            from transformers import T5Tokenizer, T5ForConditionalGeneration, pipeline
+            from transformers import T5Tokenizer, T5ForConditionalGeneration
             tokenizer = T5Tokenizer.from_pretrained(config["model_name"])
             model = T5ForConditionalGeneration.from_pretrained(config["model_name"])
         else:
             # BART/Pegasus models
-            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
             tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
             model = AutoModelForSeq2SeqLM.from_pretrained(config["model_name"])
         
         # Move model to device
         model = model.to(device)
+        model.eval()
         
-        # Create pipeline
-        current_model = pipeline(
-            "text2text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            device=0 if device == "cuda" else -1,
-            max_length=config["max_length"],
-            do_sample=config["do_sample"],
-            temperature=config.get("temperature", 0.7)
-        )
+        # Use half-precision (float16) on GPU for faster inference
+        if device == "cuda":
+            try:
+                model = model.half()
+                logger.info("Enabled half-precision (float16) for faster inference")
+            except:
+                logger.warning("Could not enable half-precision, using float32")
+        
+        # Store in global variable (we'll use direct generation instead of pipeline)
+        current_model = model
         
         model_name = model_name_param
         logger.info(f"Successfully loaded {model_name_param}")
@@ -212,7 +213,7 @@ def paraphrase_text(text: str, model_name_param: str = None) -> Tuple[str, Optio
             if not success:
                 return "", error
         
-        if current_model is None:
+        if current_model is None or tokenizer is None:
             return "", "No model available for paraphrasing"
         
         # Get model config
@@ -224,26 +225,29 @@ def paraphrase_text(text: str, model_name_param: str = None) -> Tuple[str, Optio
         else:
             input_text = text
         
-        # Generate paraphrase
-        result = current_model(
-            input_text,
-            max_length=min(len(text.split()) * 2 + 50, config["max_length"]),
-            num_return_sequences=1,
-            do_sample=config["do_sample"],
-            temperature=config.get("temperature", 0.7),
-            num_beams=config.get("num_beams", 4)
-        )
+        # Tokenize input
+        inputs = tokenizer.encode(input_text, return_tensors="pt", max_length=512, truncation=True)
+        inputs = inputs.to(device)
         
-        if result and len(result) > 0:
-            paraphrased = result[0]['generated_text'].strip()
-            
-            # Clean up output if it contains the prefix
-            if config["prefix"] and paraphrased.startswith(config["prefix"]):
-                paraphrased = paraphrased[len(config["prefix"]):].strip()
-            
-            return paraphrased, None
-        else:
-            return "", "No paraphrase generated"
+        # Generate paraphrase with optimized settings
+        with torch.no_grad():
+            outputs = current_model.generate(
+                inputs,
+                max_length=min(len(text.split()) * 2 + 30, config["max_length"]),
+                num_return_sequences=1,
+                num_beams=config.get("num_beams", 1),
+                do_sample=config.get("do_sample", False),
+                early_stopping=True
+            )
+        
+        # Decode output
+        paraphrased = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        
+        # Clean up output if it contains the prefix
+        if config["prefix"] and paraphrased.startswith(config["prefix"]):
+            paraphrased = paraphrased[len(config["prefix"]):].strip()
+        
+        return paraphrased, None
             
     except Exception as e:
         error_msg = f"Error in paraphrasing: {str(e)}"

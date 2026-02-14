@@ -1,0 +1,12 @@
+flask
+flask-cors
+torch
+transformers
+numpy
+requests
+nltk
+textblob
+sentencepiece
+pydantic>=2.0.0
+oxforddictionaries
+python-dotenv

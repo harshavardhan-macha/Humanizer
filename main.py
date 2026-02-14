@@ -1,11 +1,18 @@
 import os
+from dotenv import load_dotenv
+try:
+    from oxforddictionaries.words import OxfordDictionaries
+    OXFORD_AVAILABLE = True
+except ImportError:
+    OXFORD_AVAILABLE = False
+    OxfordDictionaries = None  # Prevent NameError
+
 import json
 import time
 from typing import Dict, Tuple
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
-import re
 
 # Import our utility modules
 from paraphraser import paraphrase_text, load_model, get_available_models, get_current_model, get_device_info
@@ -42,17 +49,22 @@ def clean_final_text(text: str) -> str:
     cleaned_text = text.replace("—", ", ")
     
     # Step 2: Remove spaces before commas and periods
-    # This regex finds spaces that are followed by comma or period
-    cleaned_text = re.sub(r' +([,.])', r'\1', cleaned_text)
+    result = []
+    for i, char in enumerate(cleaned_text):
+        if char in ',.;:!?' and i > 0 and result and result[-1] == ' ':
+            result.pop()  # Remove trailing space
+        result.append(char)
+    cleaned_text = ''.join(result)
     
     return cleaned_text
 
 class HumanizerService:
     """Main orchestrator service that combines paraphrasing and rewriting"""
-    
     def __init__(self):
+        load_dotenv()
+        from rewriter import TextRewriteService  # Import your file
+        self.rewriter = TextRewriteService()  # Already has Oxford!
         logger.info("HumanizerService initialized")
-    
     def humanize_text(
         self, 
         text: str, 
@@ -99,7 +111,7 @@ class HumanizerService:
             
             # Step 2: Rewriting and refinement
             logger.info("Starting rewriting step")
-            final_text, err = rewrite_text(current_text, enhanced=use_enhanced_rewriting)
+            final_text, err = self.rewriter.rewrite_text_with_modifications(current_text)
             
             if err:
                 logger.warning(f"Rewriting failed: {err}")
@@ -236,7 +248,7 @@ def humanize_handler():
         
         # Extract options - match frontend parameter names
         use_paraphrasing = data.get("paraphrasing", True)
-        use_enhanced = data.get("enhanced", True)  # Changed from False to True
+        use_enhanced = data.get("enhanced", False)  # Changed default to False for speed
         paraphrase_model = data.get("model", None)
         
         # Process text through humanization pipeline
@@ -1356,4 +1368,10 @@ if __name__ == '__main__':
         logger.info(f"Current model: {current_model}")
         logger.info(f"Device: {get_device_info()}")
     
-    app.run(debug=False, host='0.0.0.0', port=8080)
+    # Start Flask server with simple configuration
+    print("\n" + "="*60)
+    print("Starting Humanizer Server...")
+    print("Backend: http://localhost:5000")
+    print("="*60 + "\n")
+    
+    app.run(debug=False, host='localhost', port=5000, threaded=True, use_reloader=False)
