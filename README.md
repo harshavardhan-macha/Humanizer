@@ -6,7 +6,7 @@
 
 - 🔍 **AI Detection**: Detects AI-generated content at line and sentence levels, with visual highlighting and detailed statistics
 - 🔄 **Humanization Pipeline**: Two-step process (Paraphrasing + Rewriting) to convert AI text into more human-like writing
-- 🤖 **Multi-Model Support**: Choose from multiple transformer-based models (T5, BART, Pegasus, etc.) for paraphrasing and rewriting
+- 🤖 **Multi-Model Support**: Choose from multiple transformer-based models (T5, Pegasus, etc.) for paraphrasing and rewriting
 - ⚡ **Enhanced Mode**: Optionally use advanced prompts and NLP techniques for higher-quality rewriting
 - 🔬 **Combined Humanize & Verify**: Instantly humanize text and check for AI traces in a single workflow
 - 📋 **Copy & Share**: Easily copy results to clipboard
@@ -18,7 +18,7 @@
 - **Python 3.11+**
 - **Flask** - Web framework
 - **NLTK**, **spaCy**, **TextBlob** - NLP processing and advanced rewriting
-- **Transformers** (HuggingFace) - Paraphrasing and rewriting models (T5, BART, Pegasus)
+- **Transformers** (HuggingFace) - Paraphrasing and rewriting models (T5, Pegasus)
 
 ### Frontend
 - **SvelteKit** - Modern, component-based UI framework

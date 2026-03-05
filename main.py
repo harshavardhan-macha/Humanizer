@@ -6,7 +6,6 @@ try:
 except ImportError:
     OXFORD_AVAILABLE = False
     OxfordDictionaries = None  # Prevent NameError
-
 import json
 import time
 from typing import Dict, Tuple
@@ -22,6 +21,8 @@ from detector import (
     detect_with_all_models, 
     detect_with_selected_models, 
     detect_with_top_models,
+    detect_ai_text,
+    is_ai_generated,
     get_available_models as get_detection_models,
     get_ai_lines,
     get_ai_sentences,

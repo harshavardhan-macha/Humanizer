@@ -18,37 +18,7 @@ model = None
 
 # Model configurations with fallback options
 MODEL_CONFIGS = {
-    # T5 models (require sentencepiece)
-    "t5-small": {
-        "requires_sentencepiece": True,
-        "model_name": "t5-small",
-        "prefix": "paraphrase: ",
-        "max_length": 512,
-        "num_beams": 1,
-        "do_sample": False,
-        "temperature": 0.7,
-        "top_k": 50
-    },
-    "t5-base": {
-        "requires_sentencepiece": True,
-        "model_name": "t5-base",
-        "prefix": "paraphrase: ",
-        "max_length": 512,
-        "num_beams": 1,
-        "do_sample": False,
-        "temperature": 0.7,
-        "top_k": 50
-    },
-    "Vamsi/T5_Paraphrase_Paws": {
-        "requires_sentencepiece": True,
-        "model_name": "Vamsi/T5_Paraphrase_Paws",
-        "prefix": "paraphrase: ",
-        "max_length": 512,
-        "num_beams": 1,
-        "do_sample": False,
-        "temperature": 0.7,
-        "top_k": 50
-    },
+   
     "humarin/chatgpt_paraphraser_on_T5_base": {
         "requires_sentencepiece": True,
         "model_name": "humarin/chatgpt_paraphraser_on_T5_base",
@@ -58,38 +28,6 @@ MODEL_CONFIGS = {
         "do_sample": False,
         "temperature": 0.7,
         "top_k": 50
-    },
-    # BART models (don't require sentencepiece)
-    "facebook/bart-base": {
-        "requires_sentencepiece": False,
-        "model_name": "facebook/bart-base",
-        "prefix": "",
-        "max_length": 512,
-        "num_beams": 1,
-        "do_sample": False,
-        "temperature": 0.7,
-        "top_k": 50
-    },
-    "facebook/bart-large": {
-        "requires_sentencepiece": False,
-        "model_name": "facebook/bart-large",
-        "prefix": "",
-        "max_length": 512,
-        "num_beams": 1,
-        "do_sample": False,
-        "temperature": 0.7,
-        "top_k": 50
-    },
-    # Pegasus models (alternative option)
-    "tuner007/pegasus_paraphrase": {
-        "requires_sentencepiece": False,
-        "model_name": "tuner007/pegasus_paraphrase",
-        "prefix": "",
-        "max_length": 256,
-        "num_beams": 1,
-        "do_sample": False,
-        "temperature": 0.8,
-        "top_k": 40
     }
 }
 
@@ -169,7 +107,7 @@ def load_model(model_name_param: str = None) -> Tuple[bool, Optional[str]]:
             tokenizer = T5Tokenizer.from_pretrained(config["model_name"])
             model = T5ForConditionalGeneration.from_pretrained(config["model_name"])
         else:
-            # BART/Pegasus models
+            # Pegasus models (BART support removed)
             from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
             tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
             model = AutoModelForSeq2SeqLM.from_pretrained(config["model_name"])
@@ -217,7 +155,9 @@ def paraphrase_text(text: str, model_name_param: str = None) -> Tuple[str, Optio
             return "", "No model available for paraphrasing"
         
         # Get model config
-        config = MODEL_CONFIGS.get(model_name, MODEL_CONFIGS["facebook/bart-base"])
+        config = MODEL_CONFIGS.get(model_name)
+        if config is None:
+            return "", f"Internal error: configuration for model {model_name} not found"
         
         # Prepare input
         if config["prefix"]:

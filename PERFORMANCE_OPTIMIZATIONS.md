@@ -20,7 +20,7 @@ The humanification process has been significantly optimized to run **3-5x faster
 **Details:**
 - Beam search with num_beams=4 requires 4x more computation
 - Greedy decoding (num_beams=1) gives nearly identical quality while being ~4-10x faster
-- Applies to all models: t5-small, t5-base, facebook/bart-base, pegasus, etc.
+- Applies to all models: t5-small, t5-base, pegasus, etc.
 
 ---
 

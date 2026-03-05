@@ -910,17 +910,6 @@ export function getHumanizationModelInfo() {
             accuracy_rank: 2,
             requires_sentencepiece: true
         },
-        "facebook/bart-large": {
-            name: "BART Large",
-            description: "Powerful sequence-to-sequence model for text generation",
-            type: "large",
-            speed: "★★☆☆☆",
-            accuracy: "★★★★☆",
-            performance_rank: 3,
-            speed_rank: 6,
-            accuracy_rank: 3,
-            requires_sentencepiece: false
-        },
         "tuner007/pegasus_paraphrase": {
             name: "Pegasus Paraphrase",
             description: "Abstractive summarization-based paraphrasing",
@@ -930,17 +919,6 @@ export function getHumanizationModelInfo() {
             performance_rank: 4,
             speed_rank: 2,
             accuracy_rank: 5,
-            requires_sentencepiece: false
-        },
-        "facebook/bart-base": {
-            name: "BART Base",
-            description: "Fast and efficient text generation model",
-            type: "base",
-            speed: "★★★★☆",
-            accuracy: "★★★☆☆",
-            performance_rank: 5,
-            speed_rank: 2,
-            accuracy_rank: 4,
             requires_sentencepiece: false
         },
         "t5-base": {
@@ -976,7 +954,7 @@ export function getRecommendedHumanizationModel(type = 'performance') {
         accuracy: 'humarin/chatgpt_paraphraser_on_T5_base',
         general: 'Vamsi/T5_Paraphrase_Paws',
         quality: 'humarin/chatgpt_paraphraser_on_T5_base',
-        fast: 'facebook/bart-base',
+        fast: 't5-small',
         balanced: 'Vamsi/T5_Paraphrase_Paws'
     };
     
