@@ -138,6 +138,63 @@ def load_model(model_name_param: str = None) -> Tuple[bool, Optional[str]]:
         model_name = None
         return False, error_msg
 
+def _chunk_text_for_paraphrasing(text: str, max_tokens: int) -> List[str]:
+    """Split text into smaller chunks that fit within the model's token limit."""
+    # Simple sentence-based chunking to keep units coherent
+    try:
+        import nltk
+        from nltk.tokenize import sent_tokenize
+    except ImportError:
+        # Fallback to naive sentence splitting
+        sentences = text.split('.')
+    else:
+        sentences = sent_tokenize(text)
+
+    chunks = []
+    current = []
+    current_tokens = 0
+
+    for sent in sentences:
+        if not sent.strip():
+            continue
+
+        # Estimate tokens using tokenizer if available, otherwise word count
+        try:
+            token_ids = tokenizer.encode(sent, add_special_tokens=False)
+            sent_tokens = len(token_ids)
+        except Exception:
+            sent_tokens = len(sent.split())
+
+        # If sentence itself is too long, force-split on words
+        if sent_tokens > max_tokens:
+            words = sent.split()
+            segment = []
+            seg_tokens = 0
+            for word in words:
+                seg_tokens += 1
+                segment.append(word)
+                if seg_tokens >= max_tokens:
+                    chunks.append(' '.join(segment))
+                    segment = []
+                    seg_tokens = 0
+            if segment:
+                chunks.append(' '.join(segment))
+            continue
+
+        if current_tokens + sent_tokens > max_tokens and current:
+            chunks.append(' '.join(current))
+            current = [sent]
+            current_tokens = sent_tokens
+        else:
+            current.append(sent)
+            current_tokens += sent_tokens
+
+    if current:
+        chunks.append(' '.join(current))
+
+    return chunks
+
+
 def paraphrase_text(text: str, model_name_param: str = None) -> Tuple[str, Optional[str]]:
     """
     Paraphrase text using the loaded model
@@ -159,35 +216,48 @@ def paraphrase_text(text: str, model_name_param: str = None) -> Tuple[str, Optio
         if config is None:
             return "", f"Internal error: configuration for model {model_name} not found"
         
-        # Prepare input
-        if config["prefix"]:
-            input_text = f"{config['prefix']}{text}"
-        else:
-            input_text = text
-        
-        # Tokenize input
-        inputs = tokenizer.encode(input_text, return_tensors="pt", max_length=512, truncation=True)
-        inputs = inputs.to(device)
-        
-        # Generate paraphrase with optimized settings
-        with torch.no_grad():
-            outputs = current_model.generate(
-                inputs,
-                max_length=min(len(text.split()) * 2 + 30, config["max_length"]),
-                num_return_sequences=1,
-                num_beams=config.get("num_beams", 1),
-                do_sample=config.get("do_sample", False),
-                early_stopping=True
-            )
-        
-        # Decode output
-        paraphrased = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-        
-        # Clean up output if it contains the prefix
-        if config["prefix"] and paraphrased.startswith(config["prefix"]):
-            paraphrased = paraphrased[len(config["prefix"]):].strip()
-        
-        return paraphrased, None
+        # Chunk the input text if it is too long
+        max_input_tokens = config.get("max_length", 512) - 30
+        chunks = [text]
+        try:
+            chunks = _chunk_text_for_paraphrasing(text, max_input_tokens)
+        except Exception:
+            chunks = [text]
+
+        paraphrased_chunks = []
+        for chunk in chunks:
+            if config["prefix"]:
+                input_text = f"{config['prefix']}{chunk}"
+            else:
+                input_text = chunk
+
+            # Tokenize input (truncation should not happen for well-formed chunks)
+            inputs = tokenizer.encode(input_text, return_tensors="pt", max_length=config.get("max_length", 512), truncation=True)
+            inputs = inputs.to(device)
+            
+            # Generate paraphrase with optimized settings
+            with torch.no_grad():
+                outputs = current_model.generate(
+                    inputs,
+                    max_length=min(len(chunk.split()) * 2 + 30, config["max_length"]),
+                    num_return_sequences=1,
+                    num_beams=config.get("num_beams", 1),
+                    do_sample=config.get("do_sample", False),
+                    early_stopping=True
+                )
+            
+            # Decode output
+            paraphrased = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+            
+            # Clean up output if it contains the prefix
+            if config["prefix"] and paraphrased.startswith(config["prefix"]):
+                paraphrased = paraphrased[len(config["prefix"]):].strip()
+
+            paraphrased_chunks.append(paraphrased)
+
+        # Join the paraphrased chunks with double newlines to preserve separation
+        paraphrased_text = "\n\n".join([c for c in paraphrased_chunks if c])
+        return paraphrased_text, None
             
     except Exception as e:
         error_msg = f"Error in paraphrasing: {str(e)}"

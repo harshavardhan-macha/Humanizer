@@ -1,3 +1,4 @@
+import io
 import os
 from dotenv import load_dotenv
 try:
@@ -9,9 +10,11 @@ except ImportError:
 import json
 import time
 from typing import Dict, Tuple
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import logging
+
+from fpdf import FPDF
 
 # Import our utility modules
 from paraphraser import paraphrase_text, load_model, get_available_models, get_current_model, get_device_info
@@ -58,6 +61,22 @@ def clean_final_text(text: str) -> str:
     cleaned_text = ''.join(result)
     
     return cleaned_text
+
+
+def _text_to_pdf_bytes(text: str) -> bytes:
+    """Generate a simple PDF from plain text and return raw bytes."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Arial", size=11)
+
+    # Preserve line breaks and wrap long lines automatically
+    for line in text.splitlines():
+        # FPDF's multi_cell handles wrapping
+        pdf.multi_cell(0, 8, line)
+
+    # Return PDF as byte string
+    return pdf.output(dest="S").encode('latin-1', errors='replace')
 
 class HumanizerService:
     """Main orchestrator service that combines paraphrasing and rewriting"""
@@ -112,7 +131,10 @@ class HumanizerService:
             
             # Step 2: Rewriting and refinement
             logger.info("Starting rewriting step")
-            final_text, err = self.rewriter.rewrite_text_with_modifications(current_text)
+            if use_enhanced_rewriting:
+                final_text, err = self.rewriter.rewrite_text_with_modifications(current_text)
+            else:
+                final_text, err = self.rewriter.rewrite_text(current_text)
             
             if err:
                 logger.warning(f"Rewriting failed: {err}")
@@ -279,6 +301,60 @@ def humanize_handler():
             "error": "Internal server error",
             "success": False
         }), 500
+
+
+@app.route('/humanize_file', methods=['POST'])
+def humanize_file_handler():
+    """Endpoint to upload a .txt file, humanize it, and return a PDF."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "File is required"}), 400
+
+        file = request.files['file']
+        if not file or file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+
+        # Only accept plain text files
+        content_type = file.content_type or ''
+        if 'text' not in content_type and not file.filename.lower().endswith('.txt'):
+            return jsonify({"error": "Only plain text (.txt) files are supported"}), 400
+
+        raw_text = file.read().decode('utf-8', errors='replace')
+        text = raw_text.strip()
+        if not text:
+            return jsonify({"error": "Uploaded file is empty"}), 400
+
+        # Extract options (similar to /humanize)
+        use_paraphrasing = request.form.get('paraphrasing', 'true').lower() in ('1', 'true', 'yes')
+        use_enhanced = request.form.get('enhanced', 'false').lower() in ('1', 'true', 'yes')
+        paraphrase_model = request.form.get('model', None)
+
+        humanized_text, stats = humanizer_service.humanize_text(
+            text=text,
+            use_paraphrasing=use_paraphrasing,
+            use_enhanced_rewriting=use_enhanced,
+            paraphrase_model=paraphrase_model
+        )
+
+        if not humanized_text or not humanized_text.strip():
+            humanized_text = text
+
+        pdf_bytes = _text_to_pdf_bytes(humanized_text)
+        pdf_stream = io.BytesIO(pdf_bytes)
+        pdf_stream.seek(0)
+
+        filename = f"humanized_{os.path.splitext(file.filename)[0]}.pdf"
+        return send_file(
+            pdf_stream,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        logger.error(f"Error in /humanize_file: {str(e)}", exc_info=True)
+        return jsonify({"error": "Internal server error"}), 500
+
 
 # Additional endpoints for direct access
 @app.route('/paraphrase', methods=['POST'])
