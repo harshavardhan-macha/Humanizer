@@ -24,6 +24,8 @@ export const currentModel = writable('');
 export const selectedModel = writable('');
 export const useEnhanced = writable(true); // Changed default to true
 export const backendStatus = writable(null);
+export const addMistakes = writable(false);
+export const mistakesIntensity = writable(0.15);
 
 // Processing modes
 export const processingMode = writable('single');
@@ -218,6 +220,78 @@ export function validateDetectionInput(text) {
     return true;
 }
 
+// Lightweight client-side humanizer fallback (best-effort)
+export function localHumanize(text, options = {}) {
+    if (!text || !text.trim()) return text;
+    const intensity = typeof options.intensity === 'number' ? Math.max(0, Math.min(1, options.intensity)) : 0.5;
+    const addMistakes = !!options.addMistakes;
+    const mistakesIntensity = typeof options.mistakesIntensity === 'number' ? Math.max(0, Math.min(1, options.mistakesIntensity)) : 0.15;
+
+    // Simple contractions and informal mappings
+    const contractions = {
+        "cannot": ["can't"],
+        "will not": ["won't"],
+        "do not": ["don't"],
+        "I am": ["I'm"],
+        "you are": ["you're"],
+        "are going to": ["gonna"],
+        "want to": ["wanna"],
+        "let us": ["let's"],
+        "I have": ["I've"],
+        "it is": ["it's"]
+    };
+
+    const formalToInformal = {
+        "utilize": ["use"],
+        "regarding": ["about"],
+        "commence": ["start"],
+        "terminate": ["end"],
+        "assistance": ["help"]
+    };
+
+    let result = text;
+
+    // Apply contractions (probabilistic)
+    for (const [formal, opts] of Object.entries(contractions)) {
+        const pattern = new RegExp('\\b' + formal.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'gi');
+        result = result.replace(pattern, (m) => {
+            return Math.random() < intensity ? opts[Math.floor(Math.random() * opts.length)] : m;
+        });
+    }
+
+    // Apply formal->informal replacements
+    for (const [formal, opts] of Object.entries(formalToInformal)) {
+        const pattern = new RegExp('\\b' + formal.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'gi');
+        result = result.replace(pattern, (m) => {
+            return Math.random() < intensity * 0.6 ? opts[Math.floor(Math.random() * opts.length)] : m;
+        });
+    }
+
+    // Add occasional filler words
+    if (Math.random() < intensity * 0.6) {
+        const fillers = ['you know', 'like', 'basically', 'honestly', 'just'];
+        const sentences = result.split(/[.!?]+/).filter(s => s.trim());
+        if (sentences.length) {
+            const i = Math.floor(Math.random() * sentences.length);
+            const words = sentences[i].trim().split(/\s+/);
+            const insertPos = Math.min(words.length, Math.max(1, Math.floor(words.length / 2)));
+            words.splice(insertPos, 0, fillers[Math.floor(Math.random() * fillers.length)]);
+            sentences[i] = words.join(' ');
+            result = sentences.join('. ') + (result.endsWith('.') ? '.' : '');
+        }
+    }
+
+    // Optionally add light mistakes
+    if (addMistakes && Math.random() < mistakesIntensity) {
+        // drop some 'to' randomly
+        result = result.replace(/\bto\s+(\w+)/gi, (m, g1) => Math.random() < mistakesIntensity * 0.5 ? g1 : m);
+    }
+
+    // Cleanup spacing
+    result = result.replace(/\s+([.,!?])/g, '$1').replace(/\s+/g, ' ').trim();
+    return result;
+}
+
 // Reset results
 export function resetResults() {
     results.set({ paraphrased: '', rewritten: '', final: '' });
@@ -226,6 +300,7 @@ export function resetResults() {
     multiResults.set(null);
     allResults.set(null);
     showMultiResults.set(false);
+    showCombinedResults.set(false);
     error.set(null);
 }
 
@@ -238,87 +313,74 @@ export function resetDetectionResults() {
     error.set(null);
 }
 
-// Single model humanization (paraphrase + rewrite)
+// Single model humanization using T5 models with human variations
 export async function humanizeWithSingleModel(text, selected, enhanced) {
     if (!validateInput(text)) return;
 
     isProcessing.set(true);
-    currentStep.set('');
+    currentStep.set('paraphrasing');
     resetResults();
     processingMode.set('single');
 
     try {
-        let current;
-        currentModel.subscribe(value => current = value)();
+        // Get variation & mistakes settings
+        const addVariations = true;
+        const variationIntensity = 0.85;
+        let addMist = false;
+        let mistakesInt = 0.15;
+        addMistakes.subscribe(v => addMist = v)();
+        mistakesIntensity.subscribe(v => mistakesInt = v)();
         
-        // Load selected model if different from current
-        if (selected && selected !== current) {
-            await loadModel(selected);
-        }
-
-        // Step 1: Paraphrasing
-        currentStep.set('paraphrasing');
-        const paraphraseResponse = await fetch(`${API_BASE}/paraphrase_only`, {
+        // Call /humanize endpoint using aggressive human-style rewriting
+        const response = await fetch(`${API_BASE}/humanize`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 text: text,
-                model: selected
+                paraphrasing: false,
+                enhanced: true,
+                model: selected,
+                add_variations: addVariations,
+                variation_intensity: variationIntensity,
+                add_mistakes: addMist,
+                mistakes_intensity: mistakesInt
             })
         });
 
-        if (paraphraseResponse.ok) {
-            const paraphraseData = await paraphraseResponse.json();
-            results.update(r => ({ ...r, paraphrased: paraphraseData.paraphrased_text }));
-            statistics.update(s => ({ ...s, ...paraphraseData.statistics }));
+        if (response.ok) {
+            const data = await response.json();
+            const step1 = data.step1_output || data.humanized_text || '';
+            const step2 = data.step2_output || data.humanized_text || '';
             
-            // Show paraphrased result briefly
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        } else {
-            const errorData = await paraphraseResponse.json();
-            throw new Error(errorData.error || 'Paraphrasing failed');
-        }
-
-        // Step 2: Rewriting
-        currentStep.set('rewriting');
-        let paraphrased;
-        results.subscribe(r => paraphrased = r.paraphrased)();
-        
-        const rewriteResponse = await fetch(`${API_BASE}/rewrite_only`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: paraphrased,
-                enhanced: enhanced
-            })
-        });
-
-        if (rewriteResponse.ok) {
-            const rewriteData = await rewriteResponse.json();
             results.update(r => ({ 
                 ...r, 
-                rewritten: rewriteData.rewritten_text,
-                final: rewriteData.rewritten_text 
+                paraphrased: step1,
+                rewritten: step2,
+                final: step2
             }));
+            
             statistics.update(s => ({ 
                 ...s, 
-                ...rewriteData.statistics,
-                final_length: rewriteData.statistics.rewritten_length,
-                enhanced_rewriting_used: enhanced
+                ...data.statistics,
+                paraphrased_length: data.statistics.paraphrased_length || step1.length,
+                final_length: data.statistics.final_length || step2.length,
+                model_used: data.statistics.model_used,
+                variations_applied: data.statistics.variations_applied,
+                variation_intensity: data.statistics.variation_intensity
             }));
             
             currentStep.set('complete');
-            showToast('Text humanized successfully!');
+            showToast('Text humanized successfully with T5 model and natural variations!');
         } else {
-            const errorData = await rewriteResponse.json();
-            throw new Error(errorData.error || 'Rewriting failed');
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Humanization failed');
         }
 
     } catch (err) {
         logError('humanizeWithSingleModel', err, { 
             inputLength: text.length,
-            enhanced,
-            selected
+            selected,
+            enhanced
         });
         error.set(err.message);
         showToast(err.message, 'error');
@@ -714,7 +776,7 @@ export async function detectWithTopModels(text, n = 3, criteria = 'performance',
     return await detectAIText(text, 'top_models', threshold, { topN: n, criteria });
 }
 
-// Humanize and check combined function
+// Humanize and check combined function using T5 models with human variations
 export async function humanizeAndCheck(text, enhanced, selected, threshold) {
     if (!validateInput(text)) return;
 
@@ -725,30 +787,45 @@ export async function humanizeAndCheck(text, enhanced, selected, threshold) {
     error.set(null);
 
     try {
+        // Use the backend's combined endpoint (faster + less client-side waiting)
+        currentStep.set('humanizing and checking');
+
         const response = await fetch(`${API_BASE}/humanize_and_check`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 text: text,
+                enhanced: true,
                 paraphrasing: true,
-                enhanced: enhanced,
                 model: selected,
-                detection_threshold: threshold
+                detection_threshold: threshold ?? 0.7
             })
         });
 
-        if (response.ok) {
-            const data = await response.json();
-            combinedResults.set(data);
-            showCombinedResults.set(true);
-            
-            const improved = data.improvement.detection_improved;
-            const reduction = data.improvement.ai_probability_reduction;
-            showToast(`Processing complete! ${improved ? 'Detection improved' : 'No detection improvement'} (${(reduction * 100).toFixed(1)}% reduction)`);
-        } else {
+        if (!response.ok) {
             const errorData = await response.json();
-            throw new Error(errorData.error || `Combined processing failed: ${response.status}`);
+            throw new Error(errorData.error || 'Humanize & check failed');
         }
+
+        const data = await response.json();
+
+        // Backend already returns the combined payload we need
+        const combinedData = {
+            original_text: data.original_text,
+            humanized_text: data.humanized_text,
+            original_detection: data.original_detection,
+            humanized_detection: data.humanized_detection,
+            improvement: data.improvement,
+            humanization_stats: data.humanization_stats
+        };
+
+        combinedResults.set(combinedData);
+        showCombinedResults.set(true);
+        
+        currentStep.set('complete');
+        const reduction_pct = ((combinedData.improvement?.ai_probability_reduction || 0) * 100).toFixed(1);
+        const improved = !!combinedData.improvement?.detection_improved;
+        showToast(`Processing complete! ${improved ? 'Detection improved' : 'Detection not improved'} (${reduction_pct}% reduction)`);
     } catch (err) {
         logError('humanizeAndCheck', err, { inputLength: text.length });
         error.set(err.message);

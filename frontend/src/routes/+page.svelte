@@ -6,7 +6,7 @@
     // Import minimal icons
     import { 
         Target, Sparkles, FileEdit,
-        HelpCircle, Copy, CheckCircle, XCircle
+        HelpCircle, Copy, CheckCircle, XCircle, AlertTriangle
     } from 'lucide-svelte';
 
     import {
@@ -18,6 +18,7 @@
         humanizeAndCheck, showToast,
         getHumanizationModelInfo, getRecommendedHumanizationModel
     } from '$lib/script.js';
+    import { addMistakes, mistakesIntensity } from '$lib/script.js';
 
     import { writable } from 'svelte/store';
     const showHumanizationHelp = writable(false);
@@ -31,6 +32,14 @@
 
     const handleHumanizeWithSingleModel = () => {
         humanizeWithSingleModel($inputText, $selectedModel, $useEnhanced);
+    };
+
+    const toggleMistakes = (ev) => {
+        addMistakes.set(ev.target.checked);
+    };
+
+    const setMistakesIntensity = (ev) => {
+        mistakesIntensity.set(parseFloat(ev.target.value));
     };
 
     const handleHumanizeAndCheck = () => {
@@ -67,7 +76,22 @@
     <nav class="nav-bar">
         <div class="nav-container">
             <div class="nav-brand">
-                <h1 class="brand-title">VHumanize</h1>
+                <div class="brand-logo" aria-hidden>
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
+                                <stop offset="0%" stop-color="#4f46e5" />
+                                <stop offset="100%" stop-color="#06b6d4" />
+                            </linearGradient>
+                        </defs>
+                        <rect width="24" height="24" rx="6" fill="url(#g1)" />
+                        <path d="M7 16V8h2l3 5 3-5h2v8h-2v-5.2L12 16l-5-1.2V16H7z" fill="rgba(255,255,255,0.95)" />
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="brand-title">VIIT-Humanizer</h1>
+                    <div class="brand-tagline">Human-like text, instantly</div>
+                </div>
                 {#if $backendStatus}
                     <div class="status-dot" class:status-dot--connected={$backendStatus.status === 'healthy'}></div>
                 {/if}
@@ -77,7 +101,7 @@
                     <div class="nav-section__title">Humanization</div>
                     <div class="nav-buttons">
                         <button 
-                            class="nav-btn nav-btn--combined" 
+                            class="nav-btn nav-btn--combined btn--3d" 
                             on:click={handleHumanizeAndCheck} 
                             disabled={$isProcessing || !$inputText.trim()}
                             title="Humanize text and verify improvement"
@@ -87,12 +111,12 @@
                                 Processing...
                             {:else}
                                 <Sparkles size={16} />
-                                Humanize & Verify
+                                Humanize & Detect-Ai
                             {/if}
                         </button>
                         
                         <button 
-                            class="nav-btn nav-btn--humanize" 
+                            class="nav-btn nav-btn--humanize btn--3d" 
                             on:click={handleHumanizeWithSingleModel} 
                             disabled={$isProcessing || !$inputText.trim()}
                             title="Standard humanization"
@@ -103,7 +127,7 @@
                                  $currentStep === 'rewriting' ? 'Rewriting...' : 'Processing...'}
                             {:else}
                                 <Target size={16} />
-                                Standard
+                                Humanize
                             {/if}
                         </button>
                     </div>
@@ -153,6 +177,23 @@
                                 </small>
                             </span>
                         </label>
+                    </div>
+
+                    <div class="config-option">
+                        <label class="option">
+                            <input type="checkbox" on:change={toggleMistakes} checked={$addMistakes} />
+                            <span class="option__text">
+                                Add intentional human-like mistakes
+                                <small class="option__description">
+                                    Introduce subtle, grammatical imperfections (keeps meaning intact).
+                                </small>
+                            </span>
+                        </label>
+
+                        <div style="margin-top:8px;">
+                            <input type="range" min="0" max="1" step="0.01" value={$mistakesIntensity} on:input={setMistakesIntensity} />
+                            <div style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;">Intensity: {Math.round($mistakesIntensity * 100)}%</div>
+                        </div>
                     </div>
 
                     {#if $availableModels.length > 1}

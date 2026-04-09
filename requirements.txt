@@ -7,6 +7,8 @@ requests
 nltk
 textblob
 sentencepiece
+tiktoken
+protobuf
 pydantic>=2.0.0
 oxforddictionaries
 python-dotenv

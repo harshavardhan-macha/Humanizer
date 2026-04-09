@@ -5,7 +5,8 @@
 ## ✨ Features
 
 - 🔍 **AI Detection**: Detects AI-generated content at line and sentence levels, with visual highlighting and detailed statistics
-- 🔄 **Humanization Pipeline**: Two-step process (Paraphrasing + Rewriting) to convert AI text into more human-like writing
+- 🔄 **Humanization Pipeline**: Two-step process (Paraphrasing + Rewriting) to convert AI text into more human-like writing. The service will automatically try multiple passes and choose the version that reduces AI detector score; however, improvements are not guaranteed and scores may occasionally increase due to model randomness.
+
 - 🤖 **Multi-Model Support**: Choose from multiple transformer-based models (T5, Pegasus, etc.) for paraphrasing and rewriting
 - ⚡ **Enhanced Mode**: Optionally use advanced prompts and NLP techniques for higher-quality rewriting
 - 🔬 **Combined Humanize & Verify**: Instantly humanize text and check for AI traces in a single workflow
@@ -100,6 +101,8 @@ humanizer/
 |----------|-------------|
 | `/paraphrase_only` | Paraphrase text with selected model |
 | `/rewrite_only` | Rewrite text for humanization |
+
+> **Note:** Humanization is heuristic and detection scores may fluctuate. If you run the `/humanize_and_check` endpoint you will see `best_ai_probability_reduction` and `attempts` in the stats to help you verify whether the process actually lowered the AI probability.
 | `/paraphrase_multi` | Paraphrase with multiple models |
 | `/paraphrase_all` | Paraphrase with all available models |
 | `/highlight_ai` | Highlight detected AI-generated sentences/lines |
