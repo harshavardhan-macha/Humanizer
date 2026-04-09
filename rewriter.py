@@ -87,21 +87,32 @@ class LocalRefinementRepository:
             return self._basic_refinement(text), None
     
     def _advanced_refinement(self, text: str) -> str:
-        """Advanced refinement using TextBlob and NLTK"""
+        """Advanced refinement using TextBlob and NLTK (preserves paragraph structure)"""
         try:
-            # Grammar correction with TextBlob
-            blob = TextBlob(text)
-            corrected_text = text
+            # Split by paragraphs first to preserve structure
+            paragraphs = re.split(r'\n\n+', text)
+            refined_paragraphs = []
             
-            # Split sentences using NLTK
-            sentences = sent_tokenize(corrected_text)
+            for paragraph in paragraphs:
+                if not paragraph.strip():
+                    continue
+                    
+                # Grammar correction with TextBlob
+                blob = TextBlob(paragraph)
+                corrected_text = paragraph
+                
+                # Split sentences using NLTK
+                sentences = sent_tokenize(corrected_text)
+                
+                refined_sentences = []
+                for sentence in sentences:
+                    refined = self._improve_sentence_advanced(sentence)
+                    refined_sentences.append(refined)
+                
+                refined_paragraphs.append(" ".join(refined_sentences))
             
-            refined_sentences = []
-            for sentence in sentences:
-                refined = self._improve_sentence_advanced(sentence)
-                refined_sentences.append(refined)
-            
-            return " ".join(refined_sentences)
+            # Join with double newlines to preserve paragraph structure
+            return "\n\n".join(refined_paragraphs)
             
         except Exception as e:
             logger.warning(f"Advanced refinement failed, falling back to NLTK: {str(e)}")
@@ -136,16 +147,27 @@ class LocalRefinementRepository:
         return sentence
     
     def _nltk_refinement(self, text: str) -> str:
-        """Refinement using NLTK"""
+        """Refinement using NLTK (preserves paragraph structure)"""
         try:
-            sentences = sent_tokenize(text)
-            refined_sentences = []
+            # Split by paragraphs first to preserve structure
+            paragraphs = re.split(r'\n\n+', text)
+            refined_paragraphs = []
             
-            for sentence in sentences:
-                refined = self._improve_sentence_nltk(sentence)
-                refined_sentences.append(refined)
+            for paragraph in paragraphs:
+                if not paragraph.strip():
+                    continue
+                    
+                sentences = sent_tokenize(paragraph)
+                refined_sentences = []
+                
+                for sentence in sentences:
+                    refined = self._improve_sentence_nltk(sentence)
+                    refined_sentences.append(refined)
+                
+                refined_paragraphs.append(" ".join(refined_sentences))
             
-            return " ".join(refined_sentences)
+            # Join with double newlines to preserve paragraph structure
+            return "\n\n".join(refined_paragraphs)
             
         except Exception as e:
             logger.warning(f"NLTK refinement failed, using basic refinement: {str(e)}")
@@ -248,7 +270,7 @@ class LocalRefinementRepository:
         final_text = re.sub(r'^\s+', '', final_text)  # Remove leading spaces 
         return final_text
 class LocalSynonymRepository:
-    """Enhanced local synonym repository using NLTK WordNet"""
+    """Enhanced local synonym repository using NLTK WordNet and Oxford Dictionary API"""
     
     def __init__(self):
         load_dotenv()
@@ -261,7 +283,71 @@ class LocalSynonymRepository:
             logger.info("Oxford Dictionary API credentials loaded from .env")
         else:
             logger.warning("Oxford API keys missing from .env, will use WordNet only")
-    
+
+    def _try_oxford_synonym(self, clean_word: str) -> Optional[str]:
+        """Try to fetch a synonym from the Oxford Dictionaries API.
+
+        Returns a synonym string, or None if no synonym is available.
+        If authentication fails (401/403), disables Oxford lookups going forward.
+        """
+        if not self.app_id or not self.app_key:
+            return None
+
+        headers = {
+            "app_id": self.app_id,
+            "app_key": self.app_key,
+        }
+
+        # Try both British and US variants to increase coverage
+        for lang in ["en-gb", "en-us"]:
+            try:
+                url = f"https://od-api.oxforddictionaries.com/api/v2/thesaurus/{lang}/{clean_word}"
+                resp = requests.get(url, headers=headers, timeout=4)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = []
+
+                    for result in data.get("results", []):
+                        for lex in result.get("lexicalEntries", []):
+                            for entry in lex.get("entries", []):
+                                for sense in entry.get("senses", []):
+                                    for syn in sense.get("synonyms", []):
+                                        txt = syn.get("text")
+                                        if (
+                                            txt
+                                            and txt.isalpha()
+                                            and txt.lower() != clean_word
+                                        ):
+                                            candidates.append(txt)
+
+                    if candidates:
+                        return random.choice(candidates)
+
+                    # If we got a 200 but no synonyms, no need to try other locales
+                    return None
+
+                if resp.status_code in (401, 403):
+                    # Disable future Oxford lookups (invalid keys / access denied)
+                    logger.warning(
+                        "Oxford API authentication failed (401/403). "
+                        "Disabling Oxford lookups and falling back to WordNet."
+                    )
+                    self.app_id = None
+                    self.app_key = None
+                    return None
+
+                # Continue trying other locales for 404 or other non-fatal statuses
+                logger.debug(
+                    f"Oxford API returned {resp.status_code} for '{clean_word}' (lang={lang})"
+                )
+
+            except Exception as e:
+                logger.debug(f"Oxford API error for '{clean_word}': {e}")
+                # Don't disable keys on transient network errors
+
+        return None
+
     def get_synonym(self, word: str) -> Tuple[str, Optional[str]]:
         clean_word = word.lower().strip()
 
@@ -274,38 +360,10 @@ class LocalSynonymRepository:
             return "", "Word too short"
 
         # 1) Try Oxford thesaurus endpoint if keys exist
-        if self.app_id and self.app_key:
-            try:
-                # Thesaurus endpoint: /api/v2/thesaurus/en-gb/{word}[web:1][web:34]
-                url = f"https://od-api.oxforddictionaries.com/api/v2/thesaurus/en-gb/{clean_word}"
-                headers = {
-                    "app_id": self.app_id,
-                    "app_key": self.app_key,
-                }
-                resp = requests.get(url, headers=headers, timeout=3)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    senses = data["results"][0]["lexicalEntries"][0]["entries"][0]["senses"]
-                    candidates = []
-                    for sense in senses:
-                        for syn in sense.get("synonyms", []):
-                            txt = syn.get("text")
-                            if (
-                                txt
-                                and txt.isalpha()
-                                and txt.lower() != clean_word
-                            ):
-                                candidates.append(txt)
-                    if candidates:
-                        result = random.choice(candidates)
-                        self.synonym_cache[clean_word] = result
-                        return result, None
-                else:
-                    logger.debug(
-                        f"Oxford API non-200 for '{clean_word}': {resp.status_code}"
-                    )
-            except Exception as e:
-                logger.debug(f"Oxford API error for '{clean_word}': {e}")
+        oxford_synonym = self._try_oxford_synonym(clean_word)
+        if oxford_synonym:
+            self.synonym_cache[clean_word] = oxford_synonym
+            return oxford_synonym, None
 
         # 2) Fallback to existing WordNet logic
         try:
@@ -315,7 +373,8 @@ class LocalSynonymRepository:
                 return "", "No synonyms found for the word"
 
             all_synonyms = []
-            for synset in synsets[:1]:  # Only check first synset for speed
+            # Check multiple synsets to improve coverage while keeping performance acceptable
+            for synset in synsets[:3]:
                 for lemma in synset.lemmas():
                     synonym = lemma.name().replace("_", " ")
                     if (
@@ -366,46 +425,56 @@ class TextRewriteService:
             return text, f"Rewriting error: {str(e)}"
     
     def rewrite_text_with_modifications(self, text: str) -> Tuple[str, Optional[str]]:
-        """Enhanced rewriting with comprehensive modifications"""
+        """Enhanced rewriting with comprehensive modifications (preserves paragraph structure)"""
         try:
             # Start with base rewriting
             base_result, err = self.rewrite_text(text)
             if err:
                 return text, err
             
-            # Apply additional enhancements with HIGHER probability
-            sentences = self._split_sentences(base_result)
-            transformed = []
+            # Split by paragraphs to preserve structure
+            paragraphs = self._split_paragraphs(base_result)
+            transformed_paragraphs = []
             
-            for sentence in sentences:
-                # Apply various transformations with REDUCED probability for speed
-                if random.random() < 0.2:  # Reduced from 0.8
-                    sentence = self._vary_sentence_structure(sentence)
-                if random.random() < 0.1:  # Reduced from 0.6
-                    sentence = self._replace_synonyms(sentence)
-                # Skip natural noise - too slow
+            for paragraph in paragraphs:
+                # Apply transformations within each paragraph
+                sentences = self._split_sentences(paragraph)
+                transformed = []
                 
-                transformed.append(sentence)
+                for sentence in sentences:
+                    # Apply various transformations with REDUCED probability for speed
+                    if random.random() < 0.2:  # Reduced from 0.8
+                        sentence = self._vary_sentence_structure(sentence)
+                    if random.random() < 0.1:  # Reduced from 0.6
+                        sentence = self._replace_synonyms(sentence)
+                    # Skip natural noise - too slow
+                    
+                    transformed.append(sentence)
+                
+                # Reduced sentence reordering (within paragraph)
+                if len(transformed) > 2 and random.random() < 0.1:  # Reduced from 0.4
+                    if len(transformed) > 3:
+                        middle = transformed[1:-1]
+                        random.shuffle(middle)
+                        transformed = [transformed[0]] + middle + [transformed[-1]]
+                
+                # Reduced filler addition (within paragraph)
+                if len(transformed) > 1 and random.random() < 0.1:  # Reduced from 0.4
+                    filler = self._get_contextual_filler(transformed)
+                    if filler:
+                        # Insert at random position (not just end)
+                        insert_pos = random.randint(1, len(transformed))
+                        transformed.insert(insert_pos, filler)
+                
+                # Join sentences within paragraph
+                paragraph_text = " ".join(transformed)
+                # Collapse any pathological repeated phrases
+                paragraph_text = self._collapse_repeated_phrases(paragraph_text)
+                transformed_paragraphs.append(paragraph_text)
             
-            # Reduced sentence reordering
-            if len(transformed) > 2 and random.random() < 0.1:  # Reduced from 0.4
-                if len(transformed) > 3:
-                    middle = transformed[1:-1]
-                    random.shuffle(middle)
-                    transformed = [transformed[0]] + middle + [transformed[-1]]
-            
-            # Reduced filler addition
-            if len(transformed) > 1 and random.random() < 0.1:  # Reduced from 0.4
-                filler = self._get_contextual_filler(transformed)
-                if filler:
-                    # Insert at random position (not just end)
-                    insert_pos = random.randint(1, len(transformed))
-                    transformed.insert(insert_pos, filler)
-            
-            result_text = " ".join(transformed)
-            # Collapse any pathological repeated phrases before returning
-            result_text = self._collapse_repeated_phrases(result_text)
-            
+            # Join paragraphs with double newlines to preserve structure
+            result_text = "\n\n".join(transformed_paragraphs)
+            # Apply human errors while preserving paragraph structure
             result_text = self._inject_human_errors(result_text)
 
             return result_text, None
@@ -413,6 +482,12 @@ class TextRewriteService:
         except Exception as e:
             logger.error(f"Error in enhanced rewriting: {str(e)}")
             return text, f"Enhanced rewriting error: {str(e)}"
+    
+    def _split_paragraphs(self, text: str) -> List[str]:
+        """Split text into paragraphs (preserving double newlines)"""
+        # Split by double newlines or more to preserve paragraph structure
+        paragraphs = re.split(r'\n\n+', text)
+        return [p.strip() for p in paragraphs if p.strip()]
     
     def _split_sentences(self, text: str) -> List[str]:
         """Split text into sentences using NLTK"""
@@ -546,33 +621,53 @@ class TextRewriteService:
             return text
     def _inject_human_errors(self, text: str) -> str:
         """
-        Inject small, realistic grammar mistakes:
-        - article confusion
+        Inject realistic grammar mistakes to make text more human-like while preserving paragraph structure:
+        - article confusion (a/an/the)
         - subject–verb agreement slips
         - preposition mixups
+        - tense mistakes
+        - plural/singular errors
+        - homophone confusion
+        - word order issues
+        - missing/extra words
         """
         try:
-            sentences = self._split_sentences(text)
-            noisy = []
+            # Split by paragraphs to preserve structure
+            paragraphs = self._split_paragraphs(text)
+            processed_paragraphs = []
+            
+            for paragraph in paragraphs:
+                # Split paragraph into sentences
+                sentences = self._split_sentences(paragraph)
+                noisy = []
 
-            for sent in sentences:
-                s = sent
+                for sent in sentences:
+                    s = sent
 
-                # 1) Article mistakes (a/an/the)
-                if random.random() < 0.25:
-                    s = self._article_errors(s)
+                    # Apply multiple types of errors with higher probability
+                    error_types = [
+                        (self._article_errors, 0.6),      # 60% chance
+                        (self._subject_verb_errors, 0.6), # 60% chance
+                        (self._preposition_errors, 0.6),  # 60% chance
+                        (self._tense_errors, 0.4),        # 40% chance
+                        (self._plural_errors, 0.4),       # 40% chance
+                        (self._homophone_errors, 0.3),    # 30% chance
+                        (self._word_order_errors, 0.3),   # 30% chance
+                        (self._missing_words, 0.2),       # 20% chance
+                    ]
 
-                # 2) Subject–verb agreement mistakes
-                if random.random() < 0.25:
-                    s = self._subject_verb_errors(s)
+                    for error_func, probability in error_types:
+                        if random.random() < probability:
+                            s = error_func(s)
 
-                # 3) Preposition mistakes
-                if random.random() < 0.25:
-                    s = self._preposition_errors(s)
+                    noisy.append(s)
 
-                noisy.append(s)
-
-            return " ".join(noisy)
+                # Join sentences within paragraph with spaces
+                processed_paragraph = " ".join(noisy)
+                processed_paragraphs.append(processed_paragraph)
+            
+            # Join paragraphs with double newlines to preserve structure
+            return "\n\n".join(processed_paragraphs)
         except Exception:
             return text
 
@@ -727,6 +822,264 @@ class TextRewriteService:
         }
         return word.lower() in common_words
     
+    def _article_errors(self, sentence: str) -> str:
+        """Introduce realistic article mistakes (a/an/the confusion)"""
+        words = sentence.split()
+        if len(words) < 3:
+            return sentence
+        
+        # Common article mistakes
+        article_fixes = {
+            "a": ["an", "the"],
+            "an": ["a", "the"], 
+            "the": ["a", "an"]
+        }
+        
+        for i, word in enumerate(words):
+            lower_word = word.lower()
+            if lower_word in article_fixes and random.random() < 0.4:  # 40% chance
+                # Check if next word starts with vowel/consonant for a/an
+                if i + 1 < len(words):
+                    next_word = words[i + 1].lower().strip('.,!?;:')
+                    next_starts_vowel = next_word and next_word[0] in 'aeiou'
+                    
+                    if lower_word == "a" and next_starts_vowel:
+                        # Should be "an" but sometimes people write "a"
+                        words[i] = "an"
+                    elif lower_word == "an" and not next_starts_vowel:
+                        # Should be "a" but sometimes people write "an"
+                        words[i] = "a"
+                    elif lower_word == "the":
+                        # Sometimes omit "the" or replace with "a/an"
+                        if random.random() < 0.3:
+                            replacement = random.choice(["a", "an"])
+                            words[i] = replacement
+                        else:
+                            # Remove "the" entirely
+                            words.pop(i)
+                            break
+                break
+        
+        return " ".join(words)
+    
+    def _subject_verb_errors(self, sentence: str) -> str:
+        """Introduce subject-verb agreement mistakes"""
+        words = sentence.split()
+        if len(words) < 3:
+            return sentence
+        
+        # Look for common subject-verb patterns to mess up
+        for i, word in enumerate(words):
+            lower_word = word.lower()
+            
+            # Common mistakes: is/are, has/have, was/were
+            if lower_word in ["is", "are"] and random.random() < 0.3:
+                words[i] = "are" if lower_word == "is" else "is"
+                break
+            elif lower_word in ["has", "have"] and random.random() < 0.3:
+                words[i] = "have" if lower_word == "has" else "has"
+                break
+            elif lower_word in ["was", "were"] and random.random() < 0.3:
+                words[i] = "were" if lower_word == "was" else "was"
+                break
+        
+        return " ".join(words)
+    
+    def _preposition_errors(self, sentence: str) -> str:
+        """Introduce preposition mistakes and unwanted prepositions"""
+        words = sentence.split()
+        if len(words) < 4:
+            return sentence
+        
+        # Common preposition mistakes and additions
+        preposition_replacements = {
+            "in": ["on", "at", "with", "by"],
+            "on": ["in", "at", "with", "by"],
+            "at": ["in", "on", "with", "by"],
+            "with": ["in", "on", "at", "by"],
+            "by": ["in", "on", "at", "with"],
+            "for": ["to", "at", "with", "by"],
+            "to": ["for", "at", "with", "by"],
+            "from": ["of", "with", "by", "at"]
+        }
+        
+        # Unwanted prepositions to sometimes add
+        unwanted_preps = ["in", "on", "at", "with", "by", "for", "to", "from", "of"]
+        
+        modifications = 0
+        max_mods = 1  # Only one modification per sentence
+        
+        # First, try to replace existing prepositions
+        for i, word in enumerate(words):
+            if modifications >= max_mods:
+                break
+                
+            lower_word = word.lower()
+            if lower_word in preposition_replacements and random.random() < 0.3:
+                replacement = random.choice(preposition_replacements[lower_word])
+                words[i] = replacement
+                modifications += 1
+                break
+        
+        # Sometimes add unwanted prepositions before nouns
+        if modifications == 0 and len(words) > 3 and random.random() < 0.2:
+            # Find a noun position (roughly after articles or adjectives)
+            for i in range(1, len(words) - 1):
+                if random.random() < 0.1:  # Low chance per position
+                    # Add preposition before this word
+                    prep = random.choice(unwanted_preps)
+                    words.insert(i, prep)
+                    modifications += 1
+                    break
+        
+        return " ".join(words)
+    
+    def _tense_errors(self, sentence: str) -> str:
+        """Introduce tense mistakes (present/past/future confusion)"""
+        words = sentence.split()
+        if len(words) < 3:
+            return sentence
+        
+        # Common tense mistakes
+        tense_fixes = {
+            # Present to past
+            "is": ["was", "were"],
+            "are": ["were", "was"],
+            "has": ["had"],
+            "have": ["had"],
+            "does": ["did"],
+            "do": ["did"],
+            "goes": ["went"],
+            "says": ["said"],
+            "makes": ["made"],
+            "takes": ["took"],
+            "gets": ["got"],
+            "sees": ["saw"],
+            "knows": ["knew"],
+            "thinks": ["thought"],
+            "finds": ["found"],
+            "comes": ["came"],
+            "gives": ["gave"],
+            "runs": ["ran"],
+            # Past to present (less common but happens)
+            "was": ["is"],
+            "were": ["are"],
+            "had": ["has", "have"],
+            "did": ["does", "do"],
+        }
+        
+        for i, word in enumerate(words):
+            lower_word = word.lower()
+            if lower_word in tense_fixes and random.random() < 0.5:
+                replacement = random.choice(tense_fixes[lower_word])
+                # Preserve capitalization
+                if word[0].isupper():
+                    replacement = replacement.capitalize()
+                words[i] = replacement
+                break
+        
+        return " ".join(words)
+    
+    def _plural_errors(self, sentence: str) -> str:
+        """Introduce plural/singular mistakes"""
+        words = sentence.split()
+        if len(words) < 3:
+            return sentence
+        
+        # Common plural/singular mistakes
+        plural_fixes = {
+            # Singular to plural
+            "is": "are", "was": "were", "has": "have",
+            "this": "these", "that": "those", "it": "they",
+            "its": "their", "my": "our", "your": "your",  # your stays the same
+            "his": "their", "her": "their",
+            # Plural to singular
+            "are": "is", "were": "was", "have": "has",
+            "these": "this", "those": "that", "they": "it",
+            "their": "its", "our": "my", "your": "your",
+        }
+        
+        for i, word in enumerate(words):
+            lower_word = word.lower()
+            if lower_word in plural_fixes and random.random() < 0.4:
+                replacement = plural_fixes[lower_word]
+                # Preserve capitalization
+                if word[0].isupper():
+                    replacement = replacement.capitalize()
+                words[i] = replacement
+                break
+        
+        return " ".join(words)
+    
+    def _homophone_errors(self, sentence: str) -> str:
+        """Introduce homophone mistakes (their/there/they're, etc.)"""
+        words = sentence.split()
+        if len(words) < 2:
+            return sentence
+        
+        # Common homophone mistakes
+        homophone_fixes = {
+            "their": ["there", "they're"],
+            "there": ["their", "they're"],
+            "they're": ["their", "there"],
+            "its": ["it's"],
+            "it's": ["its"],
+            "your": ["you're"],
+            "you're": ["your"],
+            "to": ["too", "two"],
+            "too": ["to", "two"],
+            "two": ["to", "too"],
+            "then": ["than"],
+            "than": ["then"],
+            "affect": ["effect"],
+            "effect": ["affect"],
+            "accept": ["except"],
+            "except": ["accept"],
+            "principal": ["principle"],
+            "principle": ["principal"],
+            "compliment": ["complement"],
+            "complement": ["compliment"],
+        }
+        
+        for i, word in enumerate(words):
+            lower_word = word.lower()
+            if lower_word in homophone_fixes and random.random() < 0.6:
+                replacement = random.choice(homophone_fixes[lower_word])
+                # Preserve capitalization
+                if word[0].isupper():
+                    replacement = replacement.capitalize()
+                words[i] = replacement
+                break
+        
+        return " ".join(words)
+    
+    def _word_order_errors(self, sentence: str) -> str:
+        """Introduce word order mistakes"""
+        words = sentence.split()
+        if len(words) < 4:
+            return sentence
+        
+        # Simple word order swaps
+        if random.random() < 0.4:
+            # Swap two adjacent words
+            swap_idx = random.randint(0, len(words) - 2)
+            words[swap_idx], words[swap_idx + 1] = words[swap_idx + 1], words[swap_idx]
+        
+        return " ".join(words)
+    
+    def _missing_words(self, sentence: str) -> str:
+        """Occasionally omit words or add extra ones"""
+        words = sentence.split()
+        if len(words) < 4:
+            return sentence
+        
+        # Small chance to omit a word
+        if random.random() < 0.3 and len(words) > 3:
+            omit_idx = random.randint(1, len(words) - 2)  # Don't omit first or last word
+            words.pop(omit_idx)
+        
+        return " ".join(words)
+    
     def _load_fillers(self) -> List[str]:
         """Load academic-appropriate filler sentences"""
         return [
@@ -739,6 +1092,7 @@ class TextRewriteService:
             "This investigation enhances our understanding of the phenomenon.",
             "The research demonstrates the complexity of the underlying issues."
         ]
+
 
 # Public functions for external use
 def rewrite_text(text: str, enhanced: bool = False) -> Tuple[str, Optional[str]]:

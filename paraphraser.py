@@ -161,6 +161,63 @@ def load_model(model_name_param: str = None) -> Tuple[bool, Optional[str]]:
         model_name = None
         return False, error_msg
 
+def _chunk_text_for_paraphrasing(text: str, max_tokens: int) -> List[str]:
+    """Split text into smaller chunks that fit within the model's token limit."""
+    # Simple sentence-based chunking to keep units coherent
+    try:
+        import nltk
+        from nltk.tokenize import sent_tokenize
+    except ImportError:
+        # Fallback to naive sentence splitting
+        sentences = text.split('.')
+    else:
+        sentences = sent_tokenize(text)
+
+    chunks = []
+    current = []
+    current_tokens = 0
+
+    for sent in sentences:
+        if not sent.strip():
+            continue
+
+        # Estimate tokens using tokenizer if available, otherwise word count
+        try:
+            token_ids = tokenizer.encode(sent, add_special_tokens=False)
+            sent_tokens = len(token_ids)
+        except Exception:
+            sent_tokens = len(sent.split())
+
+        # If sentence itself is too long, force-split on words
+        if sent_tokens > max_tokens:
+            words = sent.split()
+            segment = []
+            seg_tokens = 0
+            for word in words:
+                seg_tokens += 1
+                segment.append(word)
+                if seg_tokens >= max_tokens:
+                    chunks.append(' '.join(segment))
+                    segment = []
+                    seg_tokens = 0
+            if segment:
+                chunks.append(' '.join(segment))
+            continue
+
+        if current_tokens + sent_tokens > max_tokens and current:
+            chunks.append(' '.join(current))
+            current = [sent]
+            current_tokens = sent_tokens
+        else:
+            current.append(sent)
+            current_tokens += sent_tokens
+
+    if current:
+        chunks.append(' '.join(current))
+
+    return chunks
+
+
 def paraphrase_text(text: str, model_name_param: str = None) -> Tuple[str, Optional[str]]:
     """
     Paraphrase text using the loaded model

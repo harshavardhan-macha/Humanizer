@@ -13,3 +13,4 @@ pydantic>=2.0.0
 oxforddictionaries
 python-dotenv
 gunicorn
+fpdf

@@ -22,13 +22,62 @@
 
     import { writable } from 'svelte/store';
     const showHumanizationHelp = writable(false);
+    const uploadFile = writable(null);
 
-    const characterCount = derived(inputText, $inputText => $inputText.length);
-    const wordCount = derived(inputText, $inputText =>
-        $inputText.trim().split(/\s+/).filter(word => word.length > 0).length
-    );
+    // Reactive statements for character and word count
+    $: characterCount = $inputText.length;
+    $: wordCount = $inputText.trim().split(/\s+/).filter(word => word.length > 0).length;
 
-    const humanizationModelInfo = getHumanizationModelInfo();
+    const handleFileChange = (event) => {
+        const files = event.target.files;
+        uploadFile.set(files && files.length ? files[0] : null);
+    };
+
+    const handleUploadAndDownload = async () => {
+        if (!$uploadFile) {
+            showToast('Please select a text file to upload', 'error');
+            return;
+        }
+
+        isProcessing.set(true);
+        currentStep.set('uploading');
+
+        try {
+            const formData = new FormData();
+            formData.append('file', $uploadFile);
+            formData.append('paraphrasing', $useEnhanced ? 'true' : 'false');
+            formData.append('enhanced', $useEnhanced ? 'true' : 'false');
+            formData.append('model', $selectedModel);
+
+            const response = await fetch(`${API_BASE}/humanize_file`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'File humanization failed');
+            }
+
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = $uploadFile.name.replace(/\.[^/.]+$/, '') + '_humanized.pdf';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showToast('PDF downloaded successfully!');
+        } catch (err) {
+            logError('handleUploadAndDownload', err, { fileName: $uploadFile?.name });
+            showToast(err.message, 'error');
+        } finally {
+            isProcessing.set(false);
+            currentStep.set('complete');
+        }
+    };
 
     const handleHumanizeWithSingleModel = () => {
         humanizeWithSingleModel($inputText, $selectedModel, $useEnhanced);
@@ -130,6 +179,27 @@
                                 Humanize
                             {/if}
                         </button>
+
+                        <div class="file-upload">
+                            <label class="file-label">
+                                <input type="file" accept=".txt" on:change={handleFileChange} />
+                                <span>{$uploadFile ? $uploadFile.name : 'Select .txt file'}</span>
+                            </label>
+                            <button
+                                class="nav-btn nav-btn--download"
+                                on:click={handleUploadAndDownload}
+                                disabled={$isProcessing || !$uploadFile}
+                                title="Upload a TXT and download humanized PDF"
+                            >
+                                {#if $isProcessing && $currentStep === 'uploading'}
+                                    <div class="spinner"></div>
+                                    Uploading...
+                                {:else}
+                                    <FileEdit size={16} />
+                                    Download PDF
+                                {/if}
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -172,8 +242,9 @@
                             <span class="option__text">
                                 Enhanced Rewriting
                                 <small class="option__description">
-                                    Uses advanced prompts with better context understanding. 
-                                    Slower but produces more natural, human-like text.
+                                    Uses advanced prompts with better context understanding and adds extensive human-like variations 
+                                    including grammatical mistakes (tense errors, subject-verb agreement, preposition confusion, homophones, word order issues) 
+                                    for highly authentic, natural text. Slower but creates very convincing human writing patterns.
                                 </small>
                             </span>
                         </label>
@@ -198,12 +269,12 @@
 
                     {#if $availableModels.length > 1}
                         <div class="config-option">
-                            <label class="config-label">
+                            <div class="config-label">
                                 Humanization Model:
                                 <small class="config-description">
                                     Choose a specific model for humanization. Different models have varying writing styles and capabilities.
                                 </small>
-                            </label>
+                            </div>
                             
                             <div class="model-selection">
                                 <div class="quick-select">
@@ -275,7 +346,7 @@
                             Enter AI-generated text to humanize
                         </label>
                         <div class="stats">
-                            {$characterCount} / 50,000 chars • {$wordCount} words
+                            {characterCount} / 50,000 chars • {wordCount} words
                         </div>
                     </div>
                     
