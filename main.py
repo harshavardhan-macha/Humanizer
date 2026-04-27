@@ -98,6 +98,15 @@ def clean_final_text(text: str) -> str:
     return cleaned_text
 
 
+def _normalize_whitespace_and_punctuation(text: str) -> str:
+    """Tight cleanup that does not alter structure or meaning."""
+    if not text:
+        return text
+    out = re.sub(r"[ \t]{2,}", " ", text)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    return out
+
+
 def _text_to_pdf_bytes(text: str) -> bytes:
     """Generate a simple PDF from plain text and return raw bytes."""
     pdf = FPDF()
@@ -164,6 +173,20 @@ class HumanizerService:
         ("cannot", "can't"),
     ]
 
+    _STRICT_FILLER_PATTERNS = [
+        r"\bthough it really depends\b",
+        r"\breal talk\b",
+        r"\bto be fair\b",
+        r"\bgenerally speaking\b",
+        r"\bwhat(?:'s| is) cool\b",
+        r"\bhonestly it changes everything\b",
+        r"\bat least in most scenarios\b",
+    ]
+
+    _COMMON_BAD_SWAPS = {
+        "figurer": "computer",
+    }
+
     def parse_blocks(self, text: str) -> List[Dict[str, str]]:
         """
         STEP 1 — PARSE INPUT INTO BLOCKS (exact spec)
@@ -197,6 +220,63 @@ class HumanizerService:
         # cleanup spaces before punctuation
         out = re.sub(r"\s+([.,!?;:])", r"\1", out)
         return out
+
+    def _strict_polish_line(self, line: str) -> str:
+        """
+        Conservative line-level polishing:
+        - preserves line boundaries and list/header shape
+        - removes forced filler phrases
+        - applies typo/bad-swap fixes and contractions
+        - normalizes spacing/punctuation only
+        """
+        if not line.strip():
+            return line
+
+        list_match = re.match(r"^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$", line)
+        if list_match:
+            prefix, content = list_match.group(1), list_match.group(2)
+        else:
+            indent = re.match(r"^(\s*)", line).group(1)
+            prefix, content = indent, line[len(indent):]
+
+        out = content
+
+        for src, dst in self._COMMON_BAD_SWAPS.items():
+            out = re.sub(r"\b" + re.escape(src) + r"\b", dst, out, flags=re.IGNORECASE)
+
+        for pattern in self._STRICT_FILLER_PATTERNS:
+            out = re.sub(
+                r"(?:,\s*|\s+|^)" + pattern + r"(?:\s*,|\s*[-—]\s*|\s+|$)",
+                " ",
+                out,
+                flags=re.IGNORECASE,
+            )
+
+        for src, dst in self._CONTRACTIONS:
+            out = re.sub(r"\b" + re.escape(src) + r"\b", dst, out, flags=re.IGNORECASE)
+
+        out = _normalize_whitespace_and_punctuation(out).strip()
+        return prefix + out
+
+    def polish_text_strict(self, text: str) -> Tuple[str, Dict]:
+        """
+        Strict polish mode:
+        - preserve structure/formatting (line and blank-line layout)
+        - tighten language without changing factual content
+        """
+        lines = text.split("\n")
+        polished_lines = [self._strict_polish_line(line) for line in lines]
+        polished = "\n".join(polished_lines)
+        polished = clean_final_text(polished)
+
+        stats = {
+            "original_length": len(text),
+            "final_length": len(polished),
+            "length_change": len(polished) - len(text),
+            "mode": "strict_polish",
+            "lines_preserved": len(lines) == len(polished_lines),
+        }
+        return polished, stats
 
     def _replace_transitions(self, text: str) -> str:
         """
@@ -863,6 +943,7 @@ def humanize_handler():
         use_paraphrasing = data.get("paraphrasing", False)  # Default to False for speed
         use_enhanced = data.get("enhanced", True)  # Default to True for better results
         paraphrase_model = data.get("model", None)
+        strict_polish = bool(data.get("strict_polish", False))
         
         # Get variation settings
         add_variations = data.get("add_variations", True)
@@ -888,17 +969,20 @@ def humanize_handler():
         
         logger.info(f"Using T5 model: {paraphrase_model}, paraphrasing: {use_paraphrasing}, enhanced: {use_enhanced}, variations: {add_variations}, intensity: {variation_intensity}")
         
-        # Process text through humanization pipeline
-        humanized_text, stats = humanizer_service.humanize_text(
-            text=text,
-            use_paraphrasing=use_paraphrasing,
-            use_enhanced_rewriting=use_enhanced,
-            paraphrase_model=paraphrase_model,
-            add_variations=add_variations,
-            variation_intensity=variation_intensity,
-            add_mistakes=add_mistakes,
-            mistakes_intensity=mistakes_intensity
-        )
+        # Process text through selected mode
+        if strict_polish:
+            humanized_text, stats = humanizer_service.polish_text_strict(text=text)
+        else:
+            humanized_text, stats = humanizer_service.humanize_text(
+                text=text,
+                use_paraphrasing=use_paraphrasing,
+                use_enhanced_rewriting=use_enhanced,
+                paraphrase_model=paraphrase_model,
+                add_variations=add_variations,
+                variation_intensity=variation_intensity,
+                add_mistakes=add_mistakes,
+                mistakes_intensity=mistakes_intensity
+            )
         
         # Ensure we return something
         if not humanized_text or not humanized_text.strip():

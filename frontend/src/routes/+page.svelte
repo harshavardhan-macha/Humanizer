@@ -6,7 +6,8 @@
     // Import minimal icons
     import { 
         Target, Sparkles, FileEdit,
-        HelpCircle, Copy, CheckCircle, XCircle, AlertTriangle
+        HelpCircle, Copy, CheckCircle, XCircle, AlertTriangle,
+        Github, Linkedin, Mail
     } from 'lucide-svelte';
 
     import {
@@ -503,6 +504,26 @@
             </div>
         </div>
     </main>
+
+    <footer class="site-footer">
+        <div class="site-footer__content">
+            <div class="site-footer__identity">
+                <div class="site-footer__brand">vhumanize</div>
+                <div class="site-footer__copyright">&copy; {new Date().getFullYear()} vhumanize. All rights reserved.</div>
+            </div>
+            <div class="site-footer__links">
+                <a class="social-link" href="https://github.com" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
+                    <Github size={18} />
+                </a>
+                <a class="social-link" href="https://linkedin.com" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn">
+                    <Linkedin size={18} />
+                </a>
+                <a class="social-link" href="mailto:contact@vhumanize.com" aria-label="Email">
+                    <Mail size={18} />
+                </a>
+            </div>
+        </div>
+    </footer>
 </div>
 
 <style>
@@ -635,6 +656,80 @@
         font-size: 12px;
         padding: 6px 8px;
         white-space: nowrap;
+    }
+
+    .site-footer {
+        display: flex;
+        justify-content: center;
+        padding: 18px 12px 24px;
+        color: var(--text-secondary);
+    }
+
+    .site-footer__content {
+        width: min(1100px, 100%);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+    }
+
+    .site-footer__brand {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: lowercase;
+        color: var(--text-primary);
+    }
+
+    .site-footer__identity {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .site-footer__copyright {
+        font-size: 0.78rem;
+        color: var(--text-secondary);
+    }
+
+    .site-footer__links {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .social-link {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-secondary);
+        background: var(--surface-1);
+        border: 1px solid var(--border);
+        transition: all 0.2s ease;
+    }
+
+    .social-link:hover {
+        color: var(--accent);
+        border-color: var(--accent);
+        transform: translateY(-1px);
+    }
+
+    @media (max-width: 640px) {
+        .site-footer__content {
+            flex-direction: column;
+            justify-content: center;
+            text-align: center;
+        }
+
+        .site-footer__identity {
+            align-items: center;
+        }
     }
 </style>
 
